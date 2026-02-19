@@ -13,31 +13,34 @@ FTE_PICKLE      = BASE_DIR / "fte_pw" / "fte.pickle"
 SCENE_JSON      = Path("/gws/nopw/j04/iecdt/cheetah/2017_08_29/bottom/extrinsic_calib/4_cam_scene_sba.json")
 FILTERED_DIR    = BASE_DIR / "filtered_2D"
 OUT_DIR         = BASE_DIR / "reprojection_verification"
+VIDEO_DIR       = BASE_DIR 
+VIDEO_ALPHA     = 0.35
+
 N_SAMPLE_FRAMES = 10
 RANDOM_SEED     = 42
 
 # FTE joint order from their notebook
 FTE_JOINT_NAMES = [
-    "l_eye",           # 0
-    "r_eye",           # 1
-    "nose",            # 2
-    "neck_base",       # 3
-    "spine",           # 4
-    "tail_base",       # 5
-    "tail1",           # 6  (tail_mid)
-    "tail2",           # 7  (tail_tip)
-    "l_shoulder",      # 8
-    "l_front_knee",    # 9
-    "l_front_ankle",   # 10
-    "r_shoulder",      # 11
-    "r_front_knee",    # 12
-    "r_front_ankle",   # 13
-    "l_hip",           # 14
-    "l_back_knee",     # 15
-    "l_back_ankle",    # 16
-    "r_hip",           # 17
-    "r_back_knee",     # 18
-    "r_back_ankle",    # 19
+    "l_eye",           
+    "r_eye",           
+    "nose",            
+    "neck_base",       
+    "spine",           
+    "tail_base",       
+    "tail1", # (tail_mid)
+    "tail2", # (tail_tip)
+    "l_shoulder",  
+    "l_front_knee",  
+    "l_front_ankle",  
+    "r_shoulder",     
+    "r_front_knee",  
+    "r_front_ankle",  
+    "l_hip",          
+    "l_back_knee",   
+    "l_back_ankle",   
+    "r_hip",          
+    "r_back_knee",   
+    "r_back_ankle",   
 ]
 
 assert len(FTE_JOINT_NAMES) == 20, "Must have exactly 20 joint names to match FTE"
@@ -50,11 +53,11 @@ def load_scene(scene_json_path: Path) -> list[dict]:
 
     cameras = []
     for cam in data["cameras"]:
-        K = np.array(cam["k"], dtype=np.float64)   # (3,3)
-        D = np.array(cam["d"], dtype=np.float64)   # (4,1)
-        R = np.array(cam["r"], dtype=np.float64)   # (3,3)
-        t = np.array(cam["t"], dtype=np.float64)   # (3,1)
-        P = K @ np.hstack([R, t])                  # (3,4)
+        K = np.array(cam["k"], dtype=np.float64) # (3,3)
+        D = np.array(cam["d"], dtype=np.float64) # (4,1)
+        R = np.array(cam["r"], dtype=np.float64) # (3,3)
+        t = np.array(cam["t"], dtype=np.float64) # (3,1)
+        P = K @ np.hstack([R, t]) # (3,4)
         cameras.append({"K": K, "D": D, "R": R, "t": t, "P": P})
 
     return cameras
@@ -66,11 +69,11 @@ def project_points(pts_3d: np.ndarray, P: np.ndarray) -> np.ndarray:
     Project (J, 3) 3D points using (3, 4) projection matrix P.
     Returns (J, 2) pixel coordinates.
     """
-    n    = pts_3d.shape[0]
+    n = pts_3d.shape[0]
     pts_h = np.hstack([pts_3d, np.ones((n, 1))]) # (J, 4)
-    proj  = (P @ pts_h.T).T # (J, 3)
-    px    = proj[:, 0] / proj[:, 2]
-    py    = proj[:, 1] / proj[:, 2]
+    proj = (P @ pts_h.T).T # (J, 3)
+    px = proj[:, 0] / proj[:, 2]
+    py = proj[:, 1] / proj[:, 2]
     return np.stack([px, py], axis=1) # (J, 2)
 
 
