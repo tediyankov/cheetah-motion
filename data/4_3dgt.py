@@ -5,6 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from pathlib import Path
+import cv2
 
 # config --------------------------------------------------------------------------
 
@@ -121,94 +122,119 @@ def main():
     if missing:
         print(f"\nWARNING: These FTE joints are missing from DLC data: {missing}")
 
-    # sampling frames (FTE-relative indices)
-    rng = np.random.default_rng(RANDOM_SEED)
-    fte_frame_idxs = rng.choice(n_fte_frames, size=N_SAMPLE_FRAMES, replace=False)
-    fte_frame_idxs = np.sort(fte_frame_idxs)
+    # open videos (one per camera)
+    video_paths = []
+    for h in h5_files:
+        cam_num = int(h.name[3])
+        video_paths.append(VIDEO_DIR / f"cam{cam_num}.mp4")
+    video_caps = [cv2.VideoCapture(str(vp)) for vp in video_paths]
 
-    print(f"\nSampled FTE frame indices: {fte_frame_idxs}")
+    try:
+        # sampling frames (FTE-relative indices)
+        rng = np.random.default_rng(RANDOM_SEED)
+        fte_frame_idxs = rng.choice(n_fte_frames, size=N_SAMPLE_FRAMES, replace=False)
+        fte_frame_idxs = np.sort(fte_frame_idxs)
 
-    for fte_idx in fte_frame_idxs:
-        dlc_row = start_frame + fte_idx  # corresponding DLC row index
+        print(f"\nSampled FTE frame indices: {fte_frame_idxs}")
 
-        pts_3d = positions[fte_idx] # (20, 3)
+        for fte_idx in fte_frame_idxs:
+            dlc_row = start_frame + fte_idx  # corresponding DLC row index
 
-        fig, axes = plt.subplots(1, n_cameras, figsize=(6 * n_cameras, 6))
-        fig.suptitle(f"Reprojection  |  FTE frame {fte_idx}  (DLC row {dlc_row})", fontsize=13)
+            pts_3d = positions[fte_idx] # (20, 3)
 
-        for cam_i, (ax, cam) in enumerate(zip(axes, cameras)):
-            P = cam["P"]
+            fig, axes = plt.subplots(1, n_cameras, figsize=(6 * n_cameras, 6))
+            fig.suptitle(f"Reprojection  |  FTE frame {fte_idx}  (DLC row {dlc_row})", fontsize=13)
 
-            # reprojecting FTE 3D points
-            proj_2d = project_points(pts_3d, P) # (20, 2)
+            for cam_i, (ax, cam) in enumerate(zip(axes, cameras)):
+                P = cam["P"]
 
-            # loading 2D DLC detections for this camera at this frame
-            df = dfs[cam_i]
-            cam_num = int(h5_files[cam_i].name[3]) # filename cam3... → 3
+                # reprojecting FTE 3D points
+                proj_2d = project_points(pts_3d, P) # (20, 2)
 
-            # plotting reprojected points
-            ax.scatter(proj_2d[:, 0], proj_2d[:, 1],
-                       c="red", s=40, marker="x", linewidths=1.5,
-                       label="FTE reprojection", zorder=3)
+                # loading 2D DLC detections for this camera at this frame
+                df = dfs[cam_i]
+                cam_num = int(h5_files[cam_i].name[3]) # filename cam3... → 3
 
-            # annotating joint names on reprojected points
-            for j, name in enumerate(FTE_JOINT_NAMES):
-                ax.annotate(name, (proj_2d[j, 0], proj_2d[j, 1]),
-                            fontsize=4, color="red", alpha=0.7)
+                # draw background video frame (low opacity)
+                cap = video_caps[cam_i]
+                cap.set(cv2.CAP_PROP_POS_FRAMES, dlc_row)
+                ok, frame = cap.read()
+                if ok:
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    h, w = frame_rgb.shape[:2]
+                    ax.imshow(
+                        frame_rgb,
+                        extent=(0, w, h, 0),
+                        alpha=VIDEO_ALPHA,
+                        zorder=0,
+                    )
 
-            # plotting DLC 2D detections
-            for j, bp in enumerate(FTE_JOINT_NAMES):
-                x_col = (scorer, bp, "x")
-                y_col = (scorer, bp, "y")
-                if x_col not in df.columns:
-                    continue
-                x_val = df.at[dlc_row, x_col]
-                y_val = df.at[dlc_row, y_col]
-                if not np.isnan(x_val):
-                    ax.scatter(x_val, y_val,
-                            c="blue", s=20, marker="o", alpha=0.7,
-                            zorder=2)
-                    # annotating blue DLC points
-                    ax.annotate(bp, (x_val, y_val),
-                                fontsize=4, color="blue", alpha=0.7,
-                                xytext=(3, 3), textcoords='offset points')
+                # plotting reprojected points
+                ax.scatter(proj_2d[:, 0], proj_2d[:, 1],
+                           c="red", s=40, marker="x", linewidths=1.5,
+                           label="FTE reprojection", zorder=3)
 
-            # collecting all plotted points for auto-zoom
-            all_u = list(proj_2d[:, 0])
-            all_v = list(proj_2d[:, 1])
-            for bp in FTE_JOINT_NAMES:
-                x_col = (scorer, bp, "x")
-                y_col = (scorer, bp, "y")
-                if x_col in df.columns:
+                # annotating joint names on reprojected points
+                for j, name in enumerate(FTE_JOINT_NAMES):
+                    ax.annotate(name, (proj_2d[j, 0], proj_2d[j, 1]),
+                                fontsize=4, color="red", alpha=0.7)
+
+                # plotting DLC 2D detections
+                for j, bp in enumerate(FTE_JOINT_NAMES):
+                    x_col = (scorer, bp, "x")
+                    y_col = (scorer, bp, "y")
+                    if x_col not in df.columns:
+                        continue
                     x_val = df.at[dlc_row, x_col]
                     y_val = df.at[dlc_row, y_col]
                     if not np.isnan(x_val):
-                        all_u.append(x_val)
-                        all_v.append(y_val)
+                        ax.scatter(x_val, y_val,
+                                c="blue", s=20, marker="o", alpha=0.7,
+                                zorder=2)
+                        # annotating blue DLC points
+                        ax.annotate(bp, (x_val, y_val),
+                                    fontsize=4, color="blue", alpha=0.7,
+                                    xytext=(3, 3), textcoords='offset points')
 
-            if len(all_u) > 0:
-                pad = 100  # pixels of padding around the points
-                ax.set_xlim(np.min(all_u) - pad, np.max(all_u) + pad)
-                ax.set_ylim(np.max(all_v) + pad, np.min(all_v) - pad)  
-            ax.set_aspect("equal")
-            ax.set_title(f"cam{cam_num}", fontsize=11)
-            ax.set_xlabel("u (px)")
-            ax.set_ylabel("v (px)")
+                # collecting all plotted points for auto-zoom
+                all_u = list(proj_2d[:, 0])
+                all_v = list(proj_2d[:, 1])
+                for bp in FTE_JOINT_NAMES:
+                    x_col = (scorer, bp, "x")
+                    y_col = (scorer, bp, "y")
+                    if x_col in df.columns:
+                        x_val = df.at[dlc_row, x_col]
+                        y_val = df.at[dlc_row, y_col]
+                        if not np.isnan(x_val):
+                            all_u.append(x_val)
+                            all_v.append(y_val)
 
-        # legend
-        red_patch  = mpatches.Patch(color="red",  label="FTE reprojection")
-        blue_patch = mpatches.Patch(color="blue", label="DLC detection (filtered)")
-        axes[-1].legend(handles=[red_patch, blue_patch], loc="lower right", fontsize=8)
+                if len(all_u) > 0:
+                    pad = 100  # pixels of padding around the points
+                    ax.set_xlim(np.min(all_u) - pad, np.max(all_u) + pad)
+                    ax.set_ylim(np.max(all_v) + pad, np.min(all_v) - pad)  
+                ax.set_aspect("equal")
+                ax.set_title(f"cam{cam_num}", fontsize=11)
+                ax.set_xlabel("u (px)")
+                ax.set_ylabel("v (px)")
 
-        plt.tight_layout()
-        out_path = OUT_DIR / f"frame_{dlc_row:04d}_fte{fte_idx:04d}.png"
-        plt.savefig(out_path, dpi=150)
-        plt.close()
-        print(f"  Saved → {out_path.name}")
+            # legend
+            red_patch  = mpatches.Patch(color="red",  label="FTE reprojection")
+            blue_patch = mpatches.Patch(color="blue", label="DLC detection (filtered)")
+            axes[-1].legend(handles=[red_patch, blue_patch], loc="lower right", fontsize=8)
 
-    print("\nDone.")
-    print("\nNote: FTE excludes paws (r_front_paw, l_front_paw, r_back_paw, l_back_paw)")
-    print("      due to grass occlusion, as stated in the paper (Section III-C)")
+            plt.tight_layout()
+            out_path = OUT_DIR / f"frame_{dlc_row:04d}_fte{fte_idx:04d}.png"
+            plt.savefig(out_path, dpi=150)
+            plt.close()
+            print(f"  Saved → {out_path.name}")
+
+        print("\nDone.")
+        print("\nNote: FTE excludes paws (r_front_paw, l_front_paw, r_back_paw, l_back_paw)")
+        print("      due to grass occlusion, as stated in the paper (Section III-C)")
+    finally:
+        for cap in video_caps:
+            cap.release()
 
 
 if __name__ == "__main__":
