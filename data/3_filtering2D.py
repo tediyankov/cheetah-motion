@@ -2,16 +2,43 @@
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
-# config --------------------------------------------------------------------------
-
-UNDISTORTED_DIR = Path("/gws/nopw/j04/iecdt/cheetah/2017_08_29/bottom/phantom/flick2/undistorted_2D")
-OUT_DIR = UNDISTORTED_DIR.parent / "filtered_2D"
-CONF_THRESHOLD = 0.3
+import argparse
 
 # main ------------------------------------------------------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Filter DLC 2D keypoints by confidence threshold"
+    )
+    parser.add_argument(
+        "--undistorted-dir",
+        type=Path,
+        required=True,
+        help="Path to directory containing undistorted .h5 files"
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: <undistorted-dir>/../filtered_2D)"
+    )
+    parser.add_argument(
+        "--conf-threshold",
+        type=float,
+        default=0.3,
+        help="Confidence threshold for filtering (default: 0.3)"
+    )
+    
+    args = parser.parse_args()
+    
+    UNDISTORTED_DIR = args.undistorted_dir
+    OUT_DIR = args.out_dir if args.out_dir else UNDISTORTED_DIR.parent / "filtered_2D"
+    CONF_THRESHOLD = args.conf_threshold
+    
+    # Validate inputs
+    if not UNDISTORTED_DIR.exists():
+        raise FileNotFoundError(f"Undistorted directory not found: {UNDISTORTED_DIR}")
+    
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     h5_files = sorted(UNDISTORTED_DIR.glob("cam*.h5"))
@@ -21,13 +48,13 @@ def main():
     for h5_path in h5_files:
         print(f"\nProcessing {h5_path.name}")
 
-        df     = pd.read_hdf(h5_path, key="df_with_missing")
+        df = pd.read_hdf(h5_path, key="df_with_missing")
         df_out = df.copy()
 
-        scorer    = df.columns.get_level_values("scorer").unique()[0]
+        scorer = df.columns.get_level_values("scorer").unique()[0]
         bodyparts = df.columns.get_level_values("bodyparts").unique()
 
-        n_total   = 0
+        n_total = 0
         n_dropped = 0
 
         for bp in bodyparts:
@@ -36,9 +63,9 @@ def main():
             c_col = (scorer, bp, "likelihood")
 
             confidence = df[c_col].values   # (T,)
-            low_conf   = confidence < CONF_THRESHOLD
+            low_conf = confidence < CONF_THRESHOLD
 
-            n_total   += len(confidence)
+            n_total += len(confidence)
             n_dropped += low_conf.sum()
 
             # setting x and y to NaN where confidence is too low
@@ -69,7 +96,14 @@ def summarise_valid_views(filtered_dir: Path, threshold: float) -> None:
     dfs = [pd.read_hdf(h, key="df_with_missing") for h in h5_files]
     scorer = dfs[0].columns.get_level_values("scorer").unique()[0]
     bodyparts = dfs[0].columns.get_level_values("bodyparts").unique()
-    n_frames = len(dfs[0])
+
+    # align frame counts (truncate to shortest)
+    frame_counts = [len(df) for df in dfs]
+    n_frames = min(frame_counts)
+    if len(set(frame_counts)) > 1:
+        print(f"\nWARNING: Mismatched frame counts {frame_counts}. "
+              f"Truncating all to {n_frames} frames for summary.")
+    dfs = [df.iloc[:n_frames].copy() for df in dfs]
 
     # for each bodypart, counting how many cameras have valid detections per frame
     valid_counts = {}
@@ -78,8 +112,8 @@ def summarise_valid_views(filtered_dir: Path, threshold: float) -> None:
         valid = np.stack(
             [~np.isnan(df[x_col].values) for df in dfs],
             axis=1
-        )                                    
-        valid_counts[bp] = valid.sum(axis=1) 
+        )
+        valid_counts[bp] = valid.sum(axis=1)
 
     # summary table: per joint, fraction of frames with >= 2 valid views
     print(f"\n{'Bodypart':<25} {'>=2 views':>10} {'>=1 view':>10} {'0 views':>10}")

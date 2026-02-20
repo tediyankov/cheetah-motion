@@ -3,13 +3,8 @@ import cv2
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
-## paths ---------------------------------------------------------------------------
-
-DLC_DIR = Path("/gws/nopw/j04/iecdt/cheetah/2017_08_29/bottom/phantom/flick2/dlc")
-SCENE_JSON = Path("/gws/nopw/j04/iecdt/cheetah/2017_08_29/bottom/extrinsic_calib/4_cam_scene_sba.json")
-OUT_DIR = DLC_DIR.parent / "undistorted_2D"
-
+import argparse
+import re
 
 ## loading scene calibration --------------------------------------------------------
 
@@ -32,10 +27,6 @@ def load_scene(scene_json_path: Path) -> dict:
 ## undistorted points ---------------------------------------------------------------
 
 def undistort_points(pts_xy: np.ndarray, K: np.ndarray, D: np.ndarray) -> np.ndarray:
-    """
-    Undistort (N,2) array of 2D points using fisheye model.
-    NaNs are preserved. Output is in pixel coords (P=K passed as new camera matrix).
-    """
     out = pts_xy.copy()
     valid = ~np.isnan(pts_xy).any(axis=1)
 
@@ -50,6 +41,40 @@ def undistort_points(pts_xy: np.ndarray, K: np.ndarray, D: np.ndarray) -> np.nda
 ## main ------------------------------------------------------------------------------
 
 def main():
+    parser = argparse.ArgumentParser(
+        description="Undistort DLC 2D keypoints using fisheye camera model"
+    )
+    parser.add_argument(
+        "--dlc-dir",
+        type=Path,
+        required=True,
+        help="Path to directory containing DLC .h5 files (e.g., .../flick2/dlc)"
+    )
+    parser.add_argument(
+        "--scene-json",
+        type=Path,
+        required=True,
+        help="Path to scene calibration JSON file"
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Output directory (default: <dlc-dir>/../undistorted_2D)"
+    )
+    
+    args = parser.parse_args()
+    
+    DLC_DIR = args.dlc_dir
+    SCENE_JSON = args.scene_json
+    OUT_DIR = args.out_dir if args.out_dir else DLC_DIR.parent / "undistorted_2D"
+    
+    # validate inputs
+    if not DLC_DIR.exists():
+        raise FileNotFoundError(f"DLC directory not found: {DLC_DIR}")
+    if not SCENE_JSON.exists():
+        raise FileNotFoundError(f"Scene JSON not found: {SCENE_JSON}")
+    
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     cameras = load_scene(SCENE_JSON)
@@ -65,6 +90,16 @@ def main():
 
         K = cameras[scene_idx]["K"]
         D = cameras[scene_idx]["D"]
+        P = cameras[scene_idx]["P"]
+
+        # derive camera name from h5 file (eg cam1DLC_ -> cam1)
+        m = re.match(r"(cam\d+)", h5_path.stem)
+        cam_name = m.group(1) if m else f"cam{scene_idx+1}"
+
+        # save per-camera P matrix as .npz
+        p_out = OUT_DIR / f"{cam_name}_P.npz"
+        np.savez(p_out, P=P)
+        print(f"Saved → {p_out}")
 
         df = pd.read_hdf(h5_path, key="df_with_missing")
         df_out = df.copy()
@@ -87,7 +122,6 @@ def main():
         print(f"Saved → {out_path}")
 
     print("\nDone.")
-
 
 if __name__ == "__main__":
     main()
