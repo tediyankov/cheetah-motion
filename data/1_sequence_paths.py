@@ -5,25 +5,6 @@ import re
 def is_date_folder(path: Path) -> bool:
     return path.is_dir() and re.fullmatch(r"\d{4}_\d{2}_\d{2}", path.name)
 
-def find_sequences_in_date(date_dir: Path) -> List[Path]:
-    """
-    Return sorted list of sequence directories under a single date folder.
-    A 'sequence' is defined as the parent directory of any 'fte_pw' folder.
-    """
-    sequences = set()
-    if not date_dir.is_dir():
-        return []
-    for fte_dir in date_dir.rglob("ftw_pw"):
-        # defensive: ensure it's under the date_dir
-        try:
-            seq = fte_dir.parent
-            seq.relative_to(date_dir)  # will raise if not under
-            sequences.add(seq)
-        except Exception:
-            continue
-    return sorted(sequences)
-
-
 def find_all_sequences(dataset_root: str) -> List[str]:
     """
     Return all sequence paths relative to dataset_root.
