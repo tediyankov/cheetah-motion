@@ -54,11 +54,11 @@ class Sample:
 class Sequence:
     def __init__(self, path: Path):
         self.path = path
-        self.detections_2d_dir = self.path / "filtered_2D"
-        self.ground_truth_3d_file = self.path / "fte_pw" / "fte.pickle"
+        self.detections_2d_dir = Path(self.path + "/filtered_2D")
+        self.ground_truth_3d_file = Path(self.path + "/fte_pw/fte.pickle")
         self.samples: List[Sample] = []
-        self.sequence_path = self.path / "sequence.pkl"
-        self.undistored_dir = self.path / "undistorted_2D"
+        self.sequence_path = Path(self.path + "/sequence.pkl")
+        self.undistored_dir = Path(self.path + "/undistorted_2D")
         self.camera_projections = np.zeros((6, 3, 4))
 
     def load_proj_matrices(self):
