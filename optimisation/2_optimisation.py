@@ -25,8 +25,8 @@ from optimisation.skeleton import BONES, BONE_LENGTHS_M
 ## config
 SEQ_PATH = Path("/gws/nopw/j04/iecdt/cheetah/2019_03_09/lily/flick")
 OUT_DIR = SEQ_PATH / "optimisation"
-LAMBDA_SMOOTH = 1e2
-LAMBDA_BONE = 1e3
+LAMBDA_SMOOTH = 1e3
+LAMBDA_BONE = 1e4
 MAX_ITER = 500
 TOL = 1e-6
 
@@ -233,7 +233,7 @@ def main():
     det_clean[nan_uv, 0] = 0.0                         
     det_clean[nan_uv, 1] = 0.0
 
-    SUBSAMPLE = 2  
+    SUBSAMPLE = 3  
     X_dlt_clean = X_dlt_clean[::SUBSAMPLE]
     gt_clean = gt_clean[::SUBSAMPLE]
     det_clean = det_clean[::SUBSAMPLE]
@@ -261,7 +261,7 @@ def main():
     def _callback(_xk):
         pbar.update(1)
 
-    MAX_EVAL = 200000
+    MAX_EVAL = 1000000
     result = minimize(
         fun=total_energy,
         x0=X_dlt_clean.flatten(),
