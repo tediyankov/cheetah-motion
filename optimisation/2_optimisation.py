@@ -163,7 +163,7 @@ def plot_improvement(X_dlt: np.ndarray, X_opt: np.ndarray, gt: np.ndarray, bones
 
     # traj smoothness 
     fig, ax = plt.subplots(figsize=(12, 4))
-    frames  = np.arange(1, T - 1)
+    frames= np.arange(1, T - 1)
 
     for X, label, colour in [
         (X_dlt, "DLT", "steelblue"),
@@ -189,8 +189,8 @@ def plot_improvement(X_dlt: np.ndarray, X_opt: np.ndarray, gt: np.ndarray, bones
     width = 0.35
 
     for offset, (X, label, colour) in enumerate([
-        (X_dlt, "DLT",       "steelblue"),
-        (X_opt, "Optimised", "tomato"),
+        (X_dlt, "DLT","steelblue"),
+        (X_opt, "Optimised","tomato"),
     ]):
         ax.bar(x_pos + offset * width, per_joint_mpjpe(X, gt),
                width, label=label, color=colour, alpha=0.8)
