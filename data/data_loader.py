@@ -67,7 +67,10 @@ class SamplesFromSequences(Dataset):
     def __getitem__(self, idx):
         return self.samples[idx]
 
-def build_loaders(batch_size=32, val_frac=0.15, test_frac=0.2, num_workers=4):
+def get_data_loaders(batch_size=32, val_frac=0.15, test_frac=0.2, num_workers=4):
+    """
+    Returns train, val, test dataloaders.
+    """
     pkl_list = make_pkl_list(CSV, BASE_ROOT)
     dataset = CheetahSamplesDataset(pkl_list, preload=True)
 
