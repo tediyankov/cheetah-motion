@@ -5,27 +5,22 @@ import numpy as np
 from typing import List, Dict, Tuple, Optional
 from pathlib import Path
 
-def get_joint_from_sample(sample: Sample, joint: int, frame: int, camera: int) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """
-    Return (u, v, likelihood) for a given bodypart at a specific frame index from a single camera DataFrame.
-    If likelihood column is missing, returns np.nan for likelihood.
-    """
-    return sample.detections_2d[camera][joint]
-
 def remove_empty_cameras(sample: Sample) -> Sample:
-    # check which cameras are empty
-    # reduce the dimension of the undistorted 2D samples and camera projection matrices
-    # within sample.camera_projections, we have a (6,3,4) tensor
-    # for each camera (axis 0) if the (3,4) matrix is all zeros, remove it
-    # within sample.detections_2d we have (6,20,3)
-    # need to remove the cameras removed above
+    # the data processing step sets projection matrices to 0 for missing cameras
+    # but keeps them in the tensor so we always have a (6,3,4) size and can infer
+    # which camera id is there
+    # this same convention is followed for all data
+
+    # determine which are the "missing" cameras
     cam_projs = sample.camera_projections # shape (6, 3, 4)
     empty_mask = np.all(cam_projs == 0, axis=(1,2))
     keep_mask = ~empty_mask
 
+    # remove the "missing" cameras and corresponding detections (which would just be zeroed)
     new_proj = cam_projs[keep_mask]
     new_dets = sample.detections_2d[keep_mask]
 
+    # return the cleaned frame
     return Sample(
         detections_2d=new_dets,
         camera_projections=new_proj,
@@ -33,14 +28,17 @@ def remove_empty_cameras(sample: Sample) -> Sample:
         frame_idx=sample.frame_idx
     )
 
-def triangulate_point_dlt(us_vs, Ps): 
+def triangulate_joint_dlt(us_vs_cs, Ps): 
     """
-    Triangulate a single 3D point from N image observations using DLT (SVD).
-    us_vs : array-like, shape (N,2) or (N,3) -- (u,v) or (u,v,score)
-    Ps    : sequence of N camera projection matrices (each 3x4)
-    returns: (x,y,z) 3-vector in non-homogeneous coords
+    Triangulate a single 3D point from C image observations using DLT (SVD).
+    us_vs_cs: (C, 3) array of C camera detections (u,v,c) where c is the confidence level
+    Ps    : sequence of C camera projection matrices (each 3x4)
+    returns: (X,Y,Z) 3-vector in non-homogeneous coords
     """
-    us_vs = np.asarray(us_vs)
+    us_vs_cs = np.asarray(us_vs_cs)
+    # if the joint is not detected with sufficient confidence, do not include this camera view
+    # note: we have already done this in the data processing step, and have set the (u,v) to nan whenever c<0.3
+
     # normalize 1D inputs to (N,2)
     if us_vs.ndim == 1 and us_vs.size in (2,3):
         us_vs = us_vs.reshape(1, -1)
@@ -50,11 +48,13 @@ def triangulate_point_dlt(us_vs, Ps):
         raise ValueError(f"us_vs must be shape (N,2) or (N,3); got shape {us_vs.shape}")
 
     # keep only first two columns (u,v)
-    us_vs = us_vs[:, :2]
+    us_vs = us_vs_cs[:, :2]
 
     # Coerce Ps to list and check length
     Ps = list(Ps)
     if len(Ps) != len(us_vs):
+        # number of cameras should equal number of detections
+        # note: at this stage this may still incude invalid "nan" detections
         return None
         raise ValueError(f"Number of projection matrices ({len(Ps)}) "
                          f"must equal number of observations ({len(us_vs)})")
@@ -70,10 +70,11 @@ def triangulate_point_dlt(us_vs, Ps):
         p3 = P[2, :]
 
         # if u or v is nan skip because it means this view isn't valid 
+        # us and vs will be nan when the confidence was <0.3
         if np.isnan(u) or np.isnan(v):
             continue
 
-        # otherwise we are safe to trust these coords
+        # otherwise we are safe to trust these coords as valid detections
         row1 = u * p3 - p1
         row2 = v * p3 - p2
 
@@ -90,7 +91,7 @@ def triangulate_point_dlt(us_vs, Ps):
         return None
         raise ValueError("Not enough valid (finite) observations to triangulate")
 
-    A = np.vstack(A_rows)   # shape (M,4)
+    A = np.vstack(A_rows)   # shape (M,4) where M = # valid detections
     # Solve A X = 0 via SVD
     U, s, Vt = np.linalg.svd(A)
     X_hom = Vt[-1, :]
@@ -102,8 +103,6 @@ def triangulate_point_dlt(us_vs, Ps):
 
 def triangulate_all_joints_per_sample(sample: Sample) -> np.ndarray:
     
-    # return (20, 3) shape for number of joints and the 3 coords
-
     # clean the sample by removing the empty cameras
     clean_sample = remove_empty_cameras(sample)
 
@@ -112,15 +111,15 @@ def triangulate_all_joints_per_sample(sample: Sample) -> np.ndarray:
     for j in range(20):
         # need the (u,v) observations for the same 3D point across all cameras 
         xs_ys_cs = clean_sample.detections_2d[:, j, :]
-        xs_ys = np.delete(xs_ys_cs, 2, axis=1) # delete the confidence as unneeded
         Ps = clean_sample.camera_projections
         
-        coords = triangulate_point_dlt(xs_ys, Ps) 
+        coords = triangulate_joint_dlt(xs_ys_cs, Ps) 
         if coords is None:
+            # if there is an error in joint triangulation, fill with nans
+            # TODO(ueastwood) propogate errors up more appropriately
             sample_result[j] = np.nan
         else:      
             sample_result[j] = coords
-        # shoudl we fill with nans instead of zeros otherwise?
     
     return sample_result
 
@@ -141,10 +140,6 @@ def triangulate_entire_sequence(sequence: List[Sample]) -> np.ndarray:
 
     return results
 
-
-# writing each sequence to a pickle file
-
-# main run for all sequences
 
 def main():
     # read all the sequence paths 
