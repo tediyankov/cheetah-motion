@@ -46,9 +46,29 @@ def triangulate_joint_dlt(us_vs_cs, Ps):
     if us_vs.ndim != 2 or us_vs.shape[1] < 2:
         return None
         raise ValueError(f"us_vs must be shape (N,2) or (N,3); got shape {us_vs.shape}")
-
     # keep only first two columns (u,v)
     us_vs = us_vs_cs[:, :2]
+
+    N = us_vs.shape()
+    u = us_vs[:, 0]
+    v = us_vs[:, 1]
+
+    p1 = Ps[:, 0, :]
+    p2 = Ps[:, 1, :]
+    p3 = Ps[:, 2, :]
+
+    # for a valid view, both u and v have to be non nan
+    valid_view_mask = ~np.isnan(u) and ~np.isnan(v)
+
+    u_valid = u[valid_view_mask]
+    v_valid = v[valid_view_mask]
+
+    # compute two rows per view
+    row1 = u_valid[:, None] * p3 - p1
+    row2 = v_valid[:, None] * p3 - p2
+
+    # interleave rows into A matrix 
+    A = np.empty(())
 
     # Coerce Ps to list and check length
     Ps = list(Ps)
@@ -56,36 +76,7 @@ def triangulate_joint_dlt(us_vs_cs, Ps):
         # number of cameras should equal number of detections
         # note: at this stage this may still incude invalid "nan" detections
         return None
-        raise ValueError(f"Number of projection matrices ({len(Ps)}) "
-                         f"must equal number of observations ({len(us_vs)})")
 
-    A_rows = []
-    for i, ((u, v), P) in enumerate(zip(us_vs, Ps)):
-        P = np.asarray(P)
-        if P.shape != (3,4):
-            return None
-            raise ValueError(f"Projection matrix at index {i} has shape {P.shape}, expected (3,4)")
-        p1 = P[0, :]
-        p2 = P[1, :]
-        p3 = P[2, :]
-
-        # if u or v is nan skip because it means this view isn't valid 
-        # us and vs will be nan when the confidence was <0.3
-        if np.isnan(u) or np.isnan(v):
-            continue
-
-        # otherwise we are safe to trust these coords as valid detections
-        row1 = u * p3 - p1
-        row2 = v * p3 - p2
-
-        A_rows.append(row1)
-        A_rows.append(row2)
-
-        # skip rows containing NaN or Inf
-        if np.all(np.isfinite(row1)):
-            A_rows.append(row1)
-        if np.all(np.isfinite(row2)):
-            A_rows.append(row2)
 
     if len(A_rows) < 2:
         return None
