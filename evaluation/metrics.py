@@ -45,7 +45,7 @@ def _procrustes_align(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
     p = p * scale
 
     try:
-        U, _, Vt = np.linalg.svd(g.T @ p)
+        U, _, Vt = np.linalg.svd(g.T @ p) # tried to implement https://neurodatascience.github.io/fmralign-tutorials/1-2-procrustes.html
     except np.linalg.LinAlgError:
         return pred
 
