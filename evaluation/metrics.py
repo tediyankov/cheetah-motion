@@ -17,12 +17,14 @@ def _project(X_j: np.ndarray, P: np.ndarray) -> np.ndarray:
 
 # overall
 def mpjpe(pred: np.ndarray, gt: np.ndarray) -> float:
-    assert pred.shape == gt.shape, f"Shape mismatch: {pred.shape} vs {gt.shape}"
-    return float(np.linalg.norm(pred - gt, axis=-1).mean()) * 1000.0
+    assert pred.shape == gt.shape, f"shape mismatch: {pred.shape} vs {gt.shape}"
+    diff = np.linalg.norm(pred - gt, axis=-1)
+    return float(np.nanmean(diff)) * 1000.0
 
 # per joint
 def per_joint_mpjpe(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
-    return np.linalg.norm(pred - gt, axis=-1).mean(axis=0) * 1000.0 
+    diff = np.linalg.norm(pred - gt, axis=-1)
+    return np.nanmean(diff, axis=0) * 1000.0  
 
 ## PA-MPJPE (mm)
 
@@ -58,11 +60,12 @@ def pa_mpjpe(pred: np.ndarray, gt: np.ndarray) -> float:
     n_skipped = 0
 
     for t in range(pred.shape[0]):
-        if not (np.isfinite(pred[t]).all() and np.isfinite(gt[t]).all()):
+        valid = np.isfinite(pred[t]).all(axis=1) & np.isfinite(gt[t]).all(axis=1)
+        if np.sum(valid) < 3:
             n_skipped += 1
             continue
-        aligned = _procrustes_align(pred[t], gt[t])
-        errors.append(np.linalg.norm(aligned - gt[t], axis=-1).mean())
+        aligned = _procrustes_align(pred[t][valid], gt[t][valid])
+        errors.append(np.linalg.norm(aligned - gt[t][valid], axis=-1).mean())
 
     if n_skipped > 0:
         print(f"[pa_mpjpe] skipped {n_skipped}/{pred.shape[0]} NaN frames")
@@ -77,8 +80,8 @@ def bone_length_std(X: np.ndarray,
     stds = []
     for i, k in bones:
         lengths = np.linalg.norm(X[:, i, :] - X[:, k, :], axis=-1) * 1000.0
-        stds.append(lengths.std())
-    return float(np.mean(stds))
+        stds.append(np.nanstd(lengths))
+    return float(np.nanmean(stds))
 
 # per bone
 def per_bone_length_std(X: np.ndarray,
@@ -86,7 +89,7 @@ def per_bone_length_std(X: np.ndarray,
     stds = []
     for i, k in bones:
         lengths = np.linalg.norm(X[:, i, :] - X[:, k, :], axis=-1) * 1000.0
-        stds.append(lengths.std())
+        stds.append(np.nanstd(lengths))
     return np.array(stds)
 
 ## Mean projection error
@@ -103,12 +106,14 @@ def mean_reproj_error(X: np.ndarray,
             continue
         for t in range(T):
             w = detections[t, c, :, 2]
-            valid = (w > 0) & np.isfinite(detections[t, c, :, 0]) & np.isfinite(detections[t, c, :, 1])
+            valid_det = (w > 0) & np.isfinite(detections[t, c, :, 0]) & np.isfinite(detections[t, c, :, 1])
+            valid_X = np.isfinite(X[t]).all(axis=1)
+            valid = valid_det & valid_X
             if not valid.any():
                 continue
-            uv_p = _project(X[t], P)
-            uv_d = detections[t, c, :, :2]
-            diff = np.linalg.norm(uv_p[valid] - uv_d[valid], axis=1)
+            uv_p = _project(X[t][valid], P)
+            uv_d = detections[t, c, valid, :2]
+            diff = np.linalg.norm(uv_p - uv_d, axis=1)
             errors.extend(diff.tolist())
 
     return float(np.mean(errors)) if errors else float("nan")
