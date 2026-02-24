@@ -28,6 +28,40 @@ def remove_empty_cameras(sample: Sample) -> Sample:
         frame_idx=sample.frame_idx
     )
 
+def normalise_points_2d (points): 
+    # TODO: points might have NaNs so we need to deal with that first before getting the centroid etc
+    points = np.asarray(points, dtype = float)
+
+    # keep finite rows
+    valid_mask = np.isfinite(points).all(axis=1)
+    if not np.any(valid_mask):
+        raise ValueError("normalise_points_2d: no finite points to normalise")
+
+    valid_points = points[valid_mask]
+
+    centroid = valid_points.mean (axis = 0)
+    shifted = valid_points - centroid
+    dist = np.linalg.norm (shifted, axis = 1)
+    mean_dist = dist.mean()
+
+    if mean_dist == 0 or not np.isfinite(mean_dist):
+        raise ValueError("normalise_points_2d: invalid mean distance")
+
+    scaling_factor = np.sqrt(2) / mean_dist
+
+    T = np.array ([
+        [scaling_factor, 0, -scaling_factor * centroid[0]],
+        [0, scaling_factor, -scaling_factor * centroid[1]],
+        [0,0,1]
+    ])
+
+    points_homog = np.column_stack((points, np.ones(points.shape[0])))
+    out = (T @ points_homog.T).T[:, :2]
+
+    # keep nans where input was invalid
+    out[~valid_mask] = np.nan
+    return {'coords': out, 'matrix': T}
+
 def triangulate_joint_dlt(us_vs_cs, Ps): 
     """
     Triangulate a single 3D point from C image observations using DLT (SVD).
@@ -39,35 +73,47 @@ def triangulate_joint_dlt(us_vs_cs, Ps):
     # if the joint is not detected with sufficient confidence, do not include this camera view
     # note: we have already done this in the data processing step, and have set the (u,v) to nan whenever c<0.3
 
-    # normalize 1D inputs to (N,2)
-    if us_vs.ndim == 1 and us_vs.size in (2,3):
-        us_vs = us_vs.reshape(1, -1)
-
-    if us_vs.ndim != 2 or us_vs.shape[1] < 2:
-        return None
-        raise ValueError(f"us_vs must be shape (N,2) or (N,3); got shape {us_vs.shape}")
-
     # keep only first two columns (u,v)
     us_vs = us_vs_cs[:, :2]
 
+    # TODO: keep only valid views
+    valid_mask = np.isfinite(us_vs).all(axis=1)
+    if np.sum(valid_mask) < 2:
+        return None
+
+    us_vs = us_vs[valid_mask]
+    Ps = np.asarray(Ps)[valid_mask]
+
+    # apply norm
+    try:
+        norm_dict = normalise_points_2d(us_vs) 
+    except ValueError as e:
+        print(f"normalise_points_2d failed: {e}")
+        return None
+    
+    us_vs_norm = norm_dict['coords']
+    T = norm_dict['matrix']
+
     # Coerce Ps to list and check length
     Ps = list(Ps)
-    if len(Ps) != len(us_vs):
+    if len(Ps) != len(us_vs_norm):
         # number of cameras should equal number of detections
         # note: at this stage this may still incude invalid "nan" detections
         return None
         raise ValueError(f"Number of projection matrices ({len(Ps)}) "
-                         f"must equal number of observations ({len(us_vs)})")
+                         f"must equal number of observations ({len(us_vs_norm)})")
 
     A_rows = []
-    for i, ((u, v), P) in enumerate(zip(us_vs, Ps)):
+    for i, ((u, v), P) in enumerate(zip(us_vs_norm, Ps)):
         P = np.asarray(P)
-        if P.shape != (3,4):
+        # normalise projection matrices using the same T as the points
+        P_norm = T @ P
+        if P_norm.shape != (3,4):
             return None
-            raise ValueError(f"Projection matrix at index {i} has shape {P.shape}, expected (3,4)")
-        p1 = P[0, :]
-        p2 = P[1, :]
-        p3 = P[2, :]
+            raise ValueError(f"Projection matrix at index {i} has shape {P_norm.shape}, expected (3,4)")
+        p1 = P_norm[0, :]
+        p2 = P_norm[1, :]
+        p3 = P_norm[2, :]
 
         # if u or v is nan skip because it means this view isn't valid 
         # us and vs will be nan when the confidence was <0.3
@@ -80,12 +126,6 @@ def triangulate_joint_dlt(us_vs_cs, Ps):
 
         A_rows.append(row1)
         A_rows.append(row2)
-
-        # skip rows containing NaN or Inf
-        if np.all(np.isfinite(row1)):
-            A_rows.append(row1)
-        if np.all(np.isfinite(row2)):
-            A_rows.append(row2)
 
     if len(A_rows) < 2:
         return None
@@ -157,10 +197,10 @@ def main():
         write_dir = Path(full_path + "/dlt")
         write_dir.mkdir(parents=True, exist_ok=True)
 
-        write_path = write_dir / "dlt.pkl"
+        write_path = write_dir / "norm_dlt.pkl"
 
         # write the results to a pickle file at dlt/dlt.pickle
-        print(f"Writing dlt results to {write_dir}")
+        print(f"Writing dlt results to {write_path}")
         pickle.dump(results, open(write_path, "wb"))
 
 if __name__ == "__main__":
