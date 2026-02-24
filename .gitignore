@@ -1,0 +1,10 @@
+baseline/
+data/3.5_matching.py
+data/run_pipeline_old.sh
+data/run_pipeline_old2.sh
+data/test.ipynb
+**/__pycache__/
+optimisation/skeleton.png
+optimisation/test.ipynb
+evaluation/__pycache__/
+optimisation/__pycache__/
