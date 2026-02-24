@@ -80,7 +80,7 @@ def energy_reproj(X: np.ndarray, detections: np.ndarray, projections: np.ndarray
         if np.all(P == 0):
             continue
         for t in range(T):
-            w     = detections[t, c, :, 2] 
+            w = detections[t, c, :, 2] 
             valid = w > 0
             if not valid.any():
                 continue
@@ -144,7 +144,7 @@ def plot_improvement(X_dlt: np.ndarray, X_opt: np.ndarray, gt: np.ndarray, bones
         (X_dlt, "DLT (before)","steelblue"),
         (X_opt, "Optimised (after)","tomato"),
     ]):
-        stds  = per_bone_length_std(X, bones)
+        stds = per_bone_length_std(X, bones)
         names = [
             f"{FTE_JOINT_NAMES[i][:6]}–{FTE_JOINT_NAMES[k][:6]}"
             for i, k in bones
