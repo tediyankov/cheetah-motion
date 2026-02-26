@@ -23,11 +23,11 @@ from evaluation.metrics import (
 from optimisation.skeleton import BONES, BONE_LENGTHS_M
 
 ## config
-SEQ_PATH = Path("/gws/nopw/j04/iecdt/cheetah/2019_03_09/lily/flick")
+SEQ_PATH = Path("/gws/nopw/j04/iecdt/cheetah/2017_12_12/bottom/big_girl/flick2")
 OUT_DIR = SEQ_PATH / "optimisation"
 LAMBDA_SMOOTH = 1e3
-LAMBDA_BONE = 1e4
-MAX_ITER = 500
+LAMBDA_BONE = 1e3
+MAX_ITER = 1000
 TOL = 1e-6
 
 ## loading data 
@@ -44,7 +44,7 @@ def load_seq (seq_path: Path) -> list[Sample]:
     return samples
 
 def load_dlt(seq_path: Path) -> np.ndarray:
-    dlt_pkl = seq_path / "dlt" / "dlt.pickle"
+    dlt_pkl = seq_path / "dlt" / "norm_dlt.pkl"
     if not dlt_pkl.exists():
         raise FileNotFoundError(f"DLT pickle not found at {dlt_pkl}")
     with open(dlt_pkl, "rb") as f:
@@ -74,36 +74,48 @@ def energy_reproj(X: np.ndarray, detections: np.ndarray, projections: np.ndarray
     T, J, _ = X.shape
     C = projections.shape[0]
     total = 0.0
+    count = 0
 
     for c in range(C):
         P = projections[c]
         if np.all(P == 0):
             continue
         for t in range(T):
-            w = detections[t, c, :, 2] 
+            w = detections[t, c, :, 2]
             valid = w > 0
             if not valid.any():
                 continue
-            uv_p = _project(X[t], P) 
-            uv_d = detections[t, c, :, :2] 
-            diff = uv_p[valid] - uv_d[valid] 
+            uv_p = _project(X[t], P)
+            uv_d = detections[t, c, :, :2]
+            diff = uv_p[valid] - uv_d[valid]
             total += (w[valid] * (diff ** 2).sum(axis=1)).sum()
+            count += int(valid.sum())
 
-    return total
+    return total / max(count, 1)
 
 # temporal smoothness
 def energy_smooth(X: np.ndarray) -> float:
-    acc = X[2:] - 2 * X[1:-1] + X[:-2] 
-    return float((acc ** 2).sum())
+    acc = X[2:] - 2 * X[1:-1] + X[:-2]
+    return float((acc ** 2).sum()) / max(acc.size, 1)
 
 # bone length consistency
-def energy_bone(X: np.ndarray, bones: list[tuple[int, int]], ref_lengths: np.ndarray) -> float:
+def energy_bone(X: np.ndarray,
+                bones: list[tuple[int, int]],
+                ref_lengths: np.ndarray,
+                bone_mask: np.ndarray | None = None) -> float:
     total = 0.0
+    count = 0
     for b, (i, k) in enumerate(bones):
+        if bone_mask is not None and not bone_mask[b]:
+            continue
+        ref = ref_lengths[b]
+        if not np.isfinite(ref):
+            continue
         diff = X[:, i, :] - X[:, k, :]
         lengths = np.linalg.norm(diff, axis=1)
-        total += ((lengths - ref_lengths[b]) ** 2).sum()
-    return total
+        total += ((lengths - ref) ** 2).sum()
+        count += lengths.size
+    return total / max(count, 1)
 
 # combining into total enery functin
 def total_energy(x_flat: np.ndarray,
@@ -113,22 +125,31 @@ def total_energy(x_flat: np.ndarray,
                  bones: list,
                  ref_lengths: np.ndarray,
                  lam_smooth: float,
-                 lam_bone: float) -> float:
+                 lam_bone: float,
+                 bone_mask: np.ndarray | None = None) -> float:
 
     X = x_flat.reshape(shape)
     e_r = energy_reproj(X, detections, projections)
     e_s = energy_smooth(X)
-    e_b = energy_bone(X, bones, ref_lengths)
+    e_b = energy_bone(X, bones, ref_lengths, bone_mask=bone_mask)
     return e_r + lam_smooth * e_s + lam_bone * e_b # TODO: hyperparam tuning og the two lambda hyperparams 
 
 ## reference bone length
 def estimate_ref_lengths(X_dlt: np.ndarray,
-                         bones: list[tuple[int, int]]) -> np.ndarray:
+                         bones: list[tuple[int, int]],
+                         min_samples: int = 30) -> tuple[np.ndarray, np.ndarray]:
     ref = []
+    counts = []
     for i, k in bones:
-        lengths = np.linalg.norm(X_dlt[:, i, :] - X_dlt[:, k, :], axis=-1)
+        valid = np.isfinite(X_dlt[:, i, :]).all(axis=1) & np.isfinite(X_dlt[:, k, :]).all(axis=1)
+        n = int(valid.sum())
+        counts.append(n)
+        if n < min_samples:
+            ref.append(np.nan)
+            continue
+        lengths = np.linalg.norm(X_dlt[valid, i, :] - X_dlt[valid, k, :], axis=-1)
         ref.append(np.nanmedian(lengths))
-    return np.array(ref)
+    return np.array(ref, dtype=np.float64), np.array(counts, dtype=np.int32)
 
 ## visualisation
 def plot_improvement(X_dlt: np.ndarray, X_opt: np.ndarray, gt: np.ndarray, bones: list[tuple[int, int]], out_dir: Path) -> None:
@@ -205,6 +226,21 @@ def plot_improvement(X_dlt: np.ndarray, X_opt: np.ndarray, gt: np.ndarray, bones
     plt.close()
     print("Saved → per_joint_mpjpe.png")
 
+## helper for filling NaNs
+def _fill_nan_linear(X: np.ndarray) -> np.ndarray:
+    Xf = X.copy()
+    T, J, D = Xf.shape
+    t = np.arange(T)
+    for j in range(J):
+        for d in range(D):
+            y = Xf[:, j, d]
+            ok = np.isfinite(y)
+            if ok.any():
+                Xf[:, j, d] = np.interp(t, t[ok], y[ok])
+            else:
+                Xf[:, j, d] = 0.0
+    return Xf
+
 ## MAIN ANALYSIS 
 
 def main():
@@ -220,30 +256,47 @@ def main():
     print(f"T={T} frames, J={J} joints, C={C} cameras")
 
     # clean NaNs before metrics/plots
-    nan_frames = np.isnan(X_dlt).any(axis=(1, 2))
-    if nan_frames.any():
-        print(f"Dropping {nan_frames.sum()} NaN frames from X_dlt before metrics")
-    X_dlt_clean = X_dlt[~nan_frames]
-    gt_clean = gt[~nan_frames]
-    det_clean = detections[~nan_frames]
+    valid = np.isfinite(X_dlt).all(axis=-1)  # shape (T, J)
+    X_dlt_clean = X_dlt.copy()
+    gt_clean = gt.copy()
+
+    X_dlt_clean[~valid] = np.nan
+    gt_clean[~valid] = np.nan
+
+    X_init = _fill_nan_linear(X_dlt_clean)
+
+    det_clean = detections.copy()
 
     # ensure NaN 2D joints are ignored everywhere
-    nan_uv = np.isnan(det_clean[..., :2]).any(axis=-1)  
-    det_clean[nan_uv, 2] = 0.0                        
-    det_clean[nan_uv, 0] = 0.0                         
+    nan_uv = np.isnan(det_clean[..., :2]).any(axis=-1)
+    det_clean[nan_uv, 2] = 0.0
+    det_clean[nan_uv, 0] = 0.0
     det_clean[nan_uv, 1] = 0.0
 
-    SUBSAMPLE = 3  
+    # mask joints with <2 valid views per frame (broadcast over cameras & channels)
+    valid_views = det_clean[..., 2] > 0  # (T, C, J)
+    valid_count = valid_views.sum(axis=1)  # (T, J)
+    bad_joint = valid_count < 2  # (T, J)
+
+    bad_joint_mask = bad_joint[:, None, :, None]  # (T, 1, J, 1)
+    det_clean = np.where(bad_joint_mask, 0.0, det_clean)
+
+    SUBSAMPLE = 3
     X_dlt_clean = X_dlt_clean[::SUBSAMPLE]
     gt_clean = gt_clean[::SUBSAMPLE]
     det_clean = det_clean[::SUBSAMPLE]
+    X_init = X_init[::SUBSAMPLE]
+    valid = valid[::SUBSAMPLE]
 
     # ref bone lengths
-    ref_lengths = estimate_ref_lengths(X_dlt_clean, BONES)
-    print(f"\nReference bone lengths from DLT (metres):")
+    ref_lengths = np.array(BONE_LENGTHS_M, dtype=np.float64)
+    bone_mask = np.isfinite(ref_lengths)
+
+    print(f"\nReference bone lengths from skeleton (metres):")
     for b, (i, k) in enumerate(BONES):
-        print(f"  {FTE_JOINT_NAMES[i]:<18} → {FTE_JOINT_NAMES[k]:<18}  "
-              f"{ref_lengths[b]:.4f} m")
+        print(f"{FTE_JOINT_NAMES[i]:<18} → {FTE_JOINT_NAMES[k]:<18}  "
+              f"{ref_lengths[b]:.4f} m  "
+              f"{'OK' if bone_mask[b] else 'SKIP'}")
 
     # metrics (before)
     metrics_dlt = report_metrics(
@@ -261,12 +314,12 @@ def main():
     def _callback(_xk):
         pbar.update(1)
 
-    MAX_EVAL = 1000000
+    MAX_EVAL = 5000000
     result = minimize(
         fun=total_energy,
-        x0=X_dlt_clean.flatten(),
+        x0=X_init.flatten(),
         args=(shape, det_clean, projections, BONES,
-              ref_lengths, LAMBDA_SMOOTH, LAMBDA_BONE),
+              ref_lengths, LAMBDA_SMOOTH, LAMBDA_BONE, bone_mask),
         method="L-BFGS-B",
         callback=_callback,
         options={"maxiter": MAX_ITER, "maxfun": MAX_EVAL, "ftol": TOL, "disp": False},
@@ -293,7 +346,7 @@ def main():
     with open(out_pkl, "wb") as f:
         pickle.dump({
             "positions": X_opt_clean,
-            "nan_mask": nan_frames,
+            "nan_mask": ~valid,
             "metrics_dlt": metrics_dlt,
             "metrics_opt": metrics_opt,
             "lambda_smooth": LAMBDA_SMOOTH,
@@ -307,4 +360,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
