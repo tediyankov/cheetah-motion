@@ -19,8 +19,18 @@ class CheetahSamplesDataset(Dataset):
                 if p.exists():
                     with open(p, "rb") as f:
                         seqs = pickle.load(f)  # list of Sample objects (a sequence) or dicts
-                    # store sequence-level containers (each item is a sequence: list of samples)
-                    self.sequences.append(seqs)
+                    # normalize sequence entries to simple tuples/lists so downstream
+                    # datasets don't have to handle `Sample` instances directly
+                    normalized = []
+
+                    for sample in seqs:
+                        # sample has detections_2d and ground_truth_3d
+                        # we need to load these as a tuple
+                        cleaned_tuple = (torch.from_numpy(sample.detections_2d), torch.from_numpy(sample.ground_truth_3d))
+                        normalized.append(cleaned_tuple)
+
+                    # store sequence-level containers (each item is a sequence: list of cleaned samples)
+                    self.sequences.append(normalized)
         else:
             raise NotImplementedError("Lazy loading not implemented in this snippet")
 
@@ -32,34 +42,30 @@ class CheetahSamplesDataset(Dataset):
 
 
 class SamplesFromSequences(Dataset):
-    """Flatten a sequence-level Subset (or iterable of sequences) into a sample-level Dataset."""
+    """Flatten a sequence-level Subset (or iterable of sequences) into a sample-level Dataset.
+    Each item returned is a tuple `(detections_2d_tensor, ground_truth_3d_tensor)` where tensors
+    are `torch.float` and suitable for batching in a DataLoader.
+    """
     def __init__(self, seq_subset):
         self.samples = []
-        # handle torch.utils.data.Subset produced by random_split
-        if isinstance(seq_subset, torch.utils.data.Subset):
-            base = seq_subset.dataset
-            indices = getattr(seq_subset, "indices", None)
-            if indices is None:
-                # fallback: iterate over subset
-                for seq in seq_subset:
-                    if isinstance(seq, list):
-                        self.samples.extend(seq)
-                    else:
-                        self.samples.append(seq)
+
+        # def _to_tensor(x):
+        #     if isinstance(x, torch.Tensor):
+        #         return x.float()
+        #     import numpy as _np
+        #     return torch.from_numpy(_np.asarray(x)).float()
+
+        def _append_sample(s):
+            self.samples.append((s[0], s[1]))
+
+        # seq_subset (including torch.utils.data.Subset) is iterable; iterate and flatten
+        # support both sequence containers (lists of samples) and single-sample entries
+        for seq in seq_subset:
+            if isinstance(seq, list):
+                for s in seq:
+                    _append_sample(s)
             else:
-                for i in indices:
-                    seq = base[i]
-                    if isinstance(seq, list):
-                        self.samples.extend(seq)
-                    else:
-                        self.samples.append(seq)
-        else:
-            # assume iterable of sequences
-            for seq in seq_subset:
-                if isinstance(seq, list):
-                    self.samples.extend(seq)
-                else:
-                    self.samples.append(seq)
+                _append_sample(seq)
 
     def __len__(self):
         return len(self.samples)
@@ -102,14 +108,3 @@ def make_pkl_list(csv_path: Path, base_root: Path) -> List[Path]:
     df = pd.read_csv(csv_path)
     paths = [base_root / p / "sequence.pkl" for p in df["sequence_path"].astype(str).tolist()]
     return [p for p in paths if p.exists()]
-
-
-    #     def __len__(self):
-    #     return len(self.samples)
-
-    # def __getitem__(self, idx):
-    #     s = self.samples[idx]
-    #     # adapt depending on Sample structure; here we return tensors
-    #     x = torch.from_numpy(s.detections_2d)       # (C, J, 3)
-    #     y = torch.from_numpy(s.ground_truth_3d)     # (J, 3)
-    #     return x.float(), y.float(), s.frame_idx
