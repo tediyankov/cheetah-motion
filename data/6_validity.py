@@ -30,25 +30,42 @@ def _stack_detections(samples):
         proj[t] = s.camera_projections
     return det, proj
 
+# helper for counting cameras
+def _count_cams_from_h5(seq_path: Path) -> int:
+    dlc_dir = seq_path / "dlc"
+    h5_files = sorted(dlc_dir.glob("cam*.h5"))
+    if not h5_files:
+        # look in sequence root if no dlc/ directory
+        h5_files = sorted(seq_path.glob("cam*.h5"))
+    return len(h5_files)
+
 def compute_sequence_stats(seq_path: Path, conf_thresh: float = 0.3) -> dict:
     # loading detections and projections
     samples = _load_sequence(seq_path)
     detections, projections = _stack_detections(samples)
     T, C, J, _ = detections.shape
 
-    # % of missing cameras ie frames where all proj are 0
-    empty_cam = np.all(projections == 0, axis=(2, 3)) # (T, C)
+    # count cameras using cam*.h5 files (same approach as 2_calibration.py)
+    cams_from_h5 = _count_cams_from_h5(seq_path)
+
+    # % of missing cameras (tolerant check for all-zero P)
+    empty_cam = np.all(np.isclose(projections, 0.0, atol=1e-8), axis=(2, 3))  # (T, C)
     pct_missing_cams = empty_cam.mean()
+
+    # count cameras by non-zero P matrices (per frame)
+    cams_present_per_frame = (~empty_cam).sum(axis=1)  # (T,)
+    mean_cams_present = float(cams_present_per_frame.mean())
+    min_cams_present = int(cams_present_per_frame.min())
 
     # valid 2D detections (if uv are finite and conf >= threshold)
     uv = detections[..., :2]
     conf = detections[..., 2]
     valid_uv = np.isfinite(uv).all(axis=-1)
     valid_conf = conf >= conf_thresh
-    valid_det = valid_uv & valid_conf # (T, C, J)
+    valid_det = valid_uv & valid_conf  # (T, C, J)
 
     # how many cameras see each joint per frame (for DLT to triangulate a joint it needs at least 2 views)
-    valid_views = valid_det.sum(axis=1) # (T, J)
+    valid_views = valid_det.sum(axis=1)  # (T, J)
     mean_valid_views = valid_views.mean()
     pct_joints_2plus = (valid_views >= 2).mean()
 
@@ -68,26 +85,30 @@ def compute_sequence_stats(seq_path: Path, conf_thresh: float = 0.3) -> dict:
         dlt_nan_mask = ~np.isfinite(X_dlt).all(axis=-1)  # (T,J)
         dlt_pct_nan = dlt_nan_mask.mean()
 
-        # reprojection error (px) using valid detections only
+        # reprojection error (px) using valid detections AND finite DLT
         errs = []
         for t in range(T):
             for c in range(C):
-                P = projections[t, c]
-                if np.all(P == 0):
+                if empty_cam[t, c]:
                     continue
-                v = valid_det[t, c]
+                v = valid_det[t, c] & np.isfinite(X_dlt[t]).all(axis=1)
                 if not v.any():
                     continue
-                uv_p = _project(X_dlt[t, v], P)
+                uv_p = _project(X_dlt[t, v], projections[t, c])
                 uv_d = uv[t, c, v]
                 diff = np.linalg.norm(uv_p - uv_d, axis=1)
-                errs.extend(diff.tolist())
+                # keep only finite diffs
+                diff = diff[np.isfinite(diff)]
+                if diff.size:
+                    errs.extend(diff.tolist())
         dlt_mean_reproj = float(np.mean(errs)) if errs else np.nan
 
     return {
         "sequence": str(seq_path),
         "frames": T,
-        "cams": C,
+        "cams": cams_from_h5,   
+        "mean_cams_present": mean_cams_present,
+        "min_cams_present": min_cams_present,
         "joints": J,
         "pct_missing_cams": float(pct_missing_cams),
         "mean_valid_views_per_joint": float(mean_valid_views),
@@ -118,6 +139,7 @@ def _score_row(r: pd.Series) -> float:
         w += weight
 
     # higher is better
+    add(r["cams"], 1.0, 6.0, 2.0)
     add(r["mean_valid_views_per_joint"], 2.0, 4.0, 2.0)
     add(r["pct_joints_with_2plus_views"], 0.6, 0.95, 2.0)
     add(r["median_conf"], 0.4, 0.9, 1.5)
@@ -177,14 +199,5 @@ def main():
 if __name__ == "__main__":
     main()
 
-# TODO: re-run DLT script on all sequences to get norm_dlt.pkl
-
-# now need to pick a seq that has 
-# - low % missing cameras
-# - high mean_valid_views_per_joint (over 3 at least)
-# - high pct_joints_with_2plus_views (over 0.8 ideally)
-# - low pct_nan_uv (near 0)
-# - high median_conf (over or at 0.7 ideally)
-# - has DLT obviously
-# - low dlt_pct_nan_joints (less than 0.2)
-# - low dlt_mean_reproj_px (under 5px ideally)
+# TODO: update logic such that it counts the cameras by looking at the non-zero elements of the P matrix not just counting the rows
+# TODO: currently dlt_mean_reproj_px is all NaNs need to fix that
