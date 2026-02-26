@@ -85,8 +85,6 @@ def get_data_loaders(batch_size=32, val_frac=0.15, test_frac=0.2, num_workers=4)
     n_val = int(n * val_frac)
     n_train = n - n_val - n_test
 
-    print(n_test, n_val, n_train)
-
     torch.manual_seed(SEED)
 
     # split sequences first
