@@ -8,3 +8,4 @@ optimisation/skeleton.png
 optimisation/test.ipynb
 evaluation/__pycache__/
 optimisation/__pycache__/
+.venv
