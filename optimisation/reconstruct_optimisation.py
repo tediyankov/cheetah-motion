@@ -23,14 +23,15 @@ from evaluation.metrics import (
 from optimisation.skeleton import BONES, BONE_LENGTHS_M
 
 ## config
-SEQ_PATH = Path("/gws/nopw/j04/iecdt/cheetah/2017_12_12/bottom/big_girl/flick2")
+SEQ_PATH = Path("/gws/nopw/j04/iecdt/cheetah/2019_03_05/lily/flick")
 OUT_DIR = SEQ_PATH / "optimisation"
-LAMBDA_SMOOTH = 1e3
+LAMBDA_SMOOTH = 0 # TODO: maybe make this super low for larger stride
 LAMBDA_BONE = 1e3
+LAMBDA_DLT = 0
 MAX_ITER = 1000
 TOL = 1e-6
 
-## loading data 
+## loading a sequence 
 def load_seq (seq_path: Path) -> list[Sample]:
     pkl_path = seq_path / "sequence.pkl"
     if not pkl_path.exists():
@@ -43,6 +44,7 @@ def load_seq (seq_path: Path) -> list[Sample]:
     print(f"loaded {len(samples)} samples from {pkl_path}")
     return samples
 
+## getting the dlt (normalised) file from the sequence folder
 def load_dlt(seq_path: Path) -> np.ndarray:
     dlt_pkl = seq_path / "dlt" / "norm_dlt.pkl"
     if not dlt_pkl.exists():
@@ -53,6 +55,10 @@ def load_dlt(seq_path: Path) -> np.ndarray:
     print(f"Loaded DLT positions: {positions.shape}")
     return positions
 
+## unpacking the sequence into tensors 
+# detections (T, C, J, 3) with (u, v, conf)
+# 3d grount truth (T, J, 3)
+# projections 
 def unpack_sequences (samples: list[Sample]): 
     T = len(samples)
     C = samples[0].detections_2d.shape[0]
@@ -95,7 +101,7 @@ def energy_reproj(X: np.ndarray, detections: np.ndarray, projections: np.ndarray
 
 # temporal smoothness
 def energy_smooth(X: np.ndarray) -> float:
-    acc = X[2:] - 2 * X[1:-1] + X[:-2]
+    acc = X[2:] - 2 * X[1:-1] + X[:-2] # TODO: why didn't I put a comma between 2, : 
     return float((acc ** 2).sum()) / max(acc.size, 1)
 
 # bone length consistency
@@ -117,7 +123,15 @@ def energy_bone(X: np.ndarray,
         count += lengths.size
     return total / max(count, 1)
 
+def energy_dlt_anchor(X: np.ndarray, X_ref: np.ndarray, valid: np.ndarray) -> float:
+    # valid: (T,J) mask of finite DLT
+    diff = X - X_ref
+    diff[~valid] = 0.0
+    count = int(valid.sum()) * 3
+    return float((diff ** 2).sum()) / max(count, 1)
+
 # combining into total enery functin
+# TODO: try predicting across a smaller time series? 
 def total_energy(x_flat: np.ndarray,
                  shape: tuple,
                  detections: np.ndarray,
@@ -126,13 +140,17 @@ def total_energy(x_flat: np.ndarray,
                  ref_lengths: np.ndarray,
                  lam_smooth: float,
                  lam_bone: float,
-                 bone_mask: np.ndarray | None = None) -> float:
+                 bone_mask: np.ndarray | None = None,
+                 X_ref: np.ndarray | None = None,
+                 valid: np.ndarray | None = None,
+                 lam_dlt: float = 0.0) -> float:
 
     X = x_flat.reshape(shape)
     e_r = energy_reproj(X, detections, projections)
     e_s = energy_smooth(X)
     e_b = energy_bone(X, bones, ref_lengths, bone_mask=bone_mask)
-    return e_r + lam_smooth * e_s + lam_bone * e_b # TODO: hyperparam tuning og the two lambda hyperparams 
+    e_d = energy_dlt_anchor(X, X_ref, valid) if (X_ref is not None and valid is not None) else 0.0
+    return e_r + lam_smooth * e_s + lam_bone * e_b + lam_dlt * e_d
 
 ## reference bone length
 def estimate_ref_lengths(X_dlt: np.ndarray,
@@ -319,7 +337,8 @@ def main():
         fun=total_energy,
         x0=X_init.flatten(),
         args=(shape, det_clean, projections, BONES,
-              ref_lengths, LAMBDA_SMOOTH, LAMBDA_BONE, bone_mask),
+              ref_lengths, LAMBDA_SMOOTH, LAMBDA_BONE, bone_mask,
+              X_dlt_clean, valid, LAMBDA_DLT),
         method="L-BFGS-B",
         callback=_callback,
         options={"maxiter": MAX_ITER, "maxfun": MAX_EVAL, "ftol": TOL, "disp": False},
